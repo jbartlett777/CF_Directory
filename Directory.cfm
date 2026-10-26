@@ -4,6 +4,7 @@ if (StructKeyExists(variables,"ThisTag")) {
 	if (ThisTag.ExecutionMode EQ "end") exit "exittag";
 }
 
+// Define parameters
 cfparam(name="Attributes.Directory", Type="String");
 cfparam(name="Attributes.Name", Type="String");
 cfparam(name="Attributes.Sort", Type="String", Default="");
@@ -13,6 +14,19 @@ cfparam(Name="Attributes.Type", Type="String", Default="all");
 cfparam(Name="Attributes.Recurse", Type="Boolean", Default="false");
 cfparam(Name="Attributes.FollowLinkedFolders", Type="Boolean", Default="true");
 cfparam(Name="Attributes.FullDetails", Type="Boolean", Default="false");
+cfparam(Name="Attributes.Alt", Type="Boolean", Default="false");
+
+// Lucee doesn't use the "Defaut" value clause, so default if not passed
+if (!StructKeyExists(Attributes,"Sort")) Attributes.Type="";
+if (!StructKeyExists(Attributes,"CaseSenstiveSort")) Attributes.CaseSenstiveSort=false;;
+if (!StructKeyExists(Attributes,"Filter")) Attributes.Filter="";
+if (!StructKeyExists(Attributes,"Type")) Attributes.Type="All";
+if (!StructKeyExists(Attributes,"Recurse")) Attributes.Recurse=false;
+if (!StructKeyExists(Attributes,"FollowLinkedFolders")) Attributes.FollowLinkedFolders=true;
+if (!StructKeyExists(Attributes,"FullDetails")) Attributes.Type=false;
+if (!StructKeyExists(Attributes,"Alt")) Attributes.Alt=false;
+
+PathChar=Server.System.properties["file.separator"];
 
 // Define the return query
 if (Attributes.FullDetails) {
@@ -31,187 +45,258 @@ if (Attributes.FullDetails) {
 QueryDeleteColumn(ReturnDir,"UName"); // Remove column used for case insensitve sorting
 SortedDir="";
 
-Files=createObject("java","java.nio.file.Files");
-LinkOption=createObject("java","java.nio.file.LinkOption");
-
-DosFileAttributes=createObject("java", "java.nio.file.attribute.DosFileAttributes");
-
-// Java LinkOption[] containing NOFOLLOW_LINKS.
-// This ensures attributes describe the symbolic link itself.
-LinkOptions=LinkOption.values();
-
-// Available attribute views vary by filesystem and operating system.
-Views=[
-	"basic",
-	"dos",
-	"posix",
-	"unix",
-	"owner",
-	"acl",
-	"user"
-];
-
-// Windows attribute flags
-flags = {
-	"ReadOnly":               1,
-	"Hidden":                 2,
-	"System":                 4,
-	"Directory":             16,
-	"Archive":               32,
-	"Device":                64,
-	"Normal":               128,
-	"Temporary":            256,
-	"Sparse File":          512,
-	"Reparse Point":       1024,
-	"Compressed":          2048,
-	"Offline":             4096,
-	"Not Indexed":         8192,
-	"Encrypted":          16384,
-	"Integrity Stream":   32768,
-	"Virtual":            65536,
-	"No Scrub Data":     131072,
-	"Recall On Open":    262144,
-	"Pinned":            524288,
-	"Unpinned":         1048576,
-	"Recall on Access": 4194304
-};
-
-
-DirectoryToList=ArrayNew(1);
-DirectoriesToList[1]=Attributes.Directory;
-
-while (ArrayLen(DirectoriesToList) GT 0) {
-
-	DirectoryData=createObject("java","java.io.File").init(DirectoriesToList[1]);
-	Entries=DirectoryData.listFiles();
-
+if (Attributes.Alt) {
+	// Use command line listing instead of Java calls
+	BATFile=Replace(GetTempDirectory(),"\","/","All") & "Dir_" & CreateUUID() & ".bat";
+	DOSRegEx="(\d{2}\/){2}\d{4}\s{2}\d{2}:\d{2} (A|P)M\s+(<DIR>)?(\s|\d)+\s[\w\d\s\W\D\S]+?(\n|\r)";
 	
-	if (isNull(Entries)) {
+	DirectoriesToList=ArrayNew(1);
+	DirectoriesToList[1]=Attributes.Directory;
+
+	while (ArrayLen(DirectoriesToList) GT 0) {
+		CurrDir=DirectoriesToList[1];
 		ArrayDeleteAt(DirectoriesToList,1);
-		continue; // Can't access directory, move on to the next one if any
+
+		if (PathChar EQ "\") {
+			// Windows
+			fileWrite(BATFile, "DIR /N /-C /4 " & Chr(34) & Replace(CurrDir,"/","\","All") & Chr(34));
+			cfexecute(
+				name="#BatFile#",
+				timeout="10",
+				variable="Dir"
+				);
+			FileDelete(BATFile);
+			Files=REMatchNoCase(DOSRegEx,Dir);
+			// Loop over the directory return and parse out the info
+			for (i=1; i LTE ArrayLen(Files); i=i+1) {
+				LineDate=ParseDateTime(ListGetAt(Files[i],1," ") & " " & ListGetAt(Files[i],2," ") & " " & ListGetAt(Files[i],3," "));
+				if (Left(ListGetAt(Files[i],4," "),1) EQ "<") {
+					LineType="Dir";
+					LineSize=0;
+				} else {
+					LineType="File";
+					LineSize=Val(ListGetAt(Files[i],4," "));
+				}
+				for (q=1; q LTE 4;q=q+1) Files[i]=ListDeleteAt(Files[i],1," "); // Delete stuff before file anme
+				LineName=Trim(Files[i]);
+				JuncLoc=Find("[",LineName);
+				if (JuncLoc AND Right(LineName,1) EQ "]") { // Symlink or junction
+					LineJunction=Mid(LineName,JuncLoc + 1,999);
+					LineJunction=Left(LineJunction,Len(LineJunction) - 1);
+					LineName=Trim(Left(LineName,JuncLoc - 1));
+				} else {
+					LineJunction="";
+				}
+				if (!ListFind(".,..",LineName)) {
+					// Append the current directory if recursing
+					if (LineType EQ "Dir" AND Attributes.Recurse) DirectoriesToList[ArrayLen(DirectoriesToList) + 1]=CurrDir & "/" & LineName;
+
+					QueryAddRow(DirInfo);
+					QuerySetCell(DirInfo,"Name",LineName);
+					QuerySetCell(DirInfo,"UName",UCase(LineName));
+					QuerySetCell(DirInfo,"Size",LineSize);
+					QuerySetCell(DirInfo,"Type",LineType);
+					QuerySetCell(DirInfo,"DateLastModified",LineDate);
+					QuerySetCell(DirInfo,"Directory",CurrDir);
+					if (LineJunction NEQ "") {
+						QuerySetCell(DirInfo,"Link","YES");
+						if (Attributes.FullDetails) QuerySetCell(DirInfo,"LinkTarget",LineJunction);
+					} else {
+						QuerySetCell(DirInfo,"Link","NO");
+					}
+
+
+				}
+
+			}
+		} {
+			// Unix
+		}
 	}
+} else {
+	// Java calls
+	Files=createObject("java","java.nio.file.Files");
+	LinkOption=createObject("java","java.nio.file.LinkOption");
 
-	for (Entry in Entries) {
+	DosFileAttributes=createObject("java", "java.nio.file.attribute.DosFileAttributes");
 
-		Info=StructNew("ordered");
-		Info["Name"]=Entry.getName(); // Name
-		Info["UName"]=UCase(Info["Name"]); // UName
-		Info["Size"]=Entry.length(); // Size
-		Info["Type"]=(Entry.isDirectory()) ? "Dir" : "File"; // Type
+	// Java LinkOption[] containing NOFOLLOW_LINKS.
+	// This ensures attributes describe the symbolic link itself.
+	LinkOptions=LinkOption.values();
 
-		if (ListFindNoCase("Dir,File",Attributes.Type) AND Attributes.Type NEQ Info["Type"]) continue; // Skip this entry as it's not the correct type requested
-		//Info["DateLastModified"]=Entry.lastModified(); // DateLastModified
-		Info["DateLastModified"]=DateAdd("s",Int(Entry.lastModified() / 1000),CreateDate(1970,1,1)); // Convert Epoc to date
-		Info["Attributes"]=""; // Attributes
-		Info["Mode"]=""; // Mode
-		Info["Directory"]=Entry.getParent(); // Directory
-		path=Entry.toPath();
-		Info["Link"]=Files.isSymbolicLink(path); // Link
+	// Available attribute views vary by filesystem and operating system.
+	Views=[
+		"basic",
+		"dos",
+		"posix",
+		"unix",
+		"owner",
+		"acl",
+		"user"
+	];
 
-		if (Attributes.FullDetails) {			
-			Info["Exists"]=Entry.exists();
-			Info["Hidden"]=Entry.isHidden();
-			Info["Read"]=Entry.canRead();
-			Info["Write"]=Entry.canWrite();
-			Info["Execute"]=Entry.canExecute();
+	// Windows attribute flags
+	flags = {
+		"ReadOnly":               1,
+		"Hidden":                 2,
+		"System":                 4,
+		"Directory":             16,
+		"Archive":               32,
+		"Device":                64,
+		"Normal":               128,
+		"Temporary":            256,
+		"Sparse File":          512,
+		"Reparse Point":       1024,
+		"Compressed":          2048,
+		"Offline":             4096,
+		"Not Indexed":         8192,
+		"Encrypted":          16384,
+		"Integrity Stream":   32768,
+		"Virtual":            65536,
+		"No Scrub Data":     131072,
+		"Recall On Open":    262144,
+		"Pinned":            524288,
+		"Unpinned":         1048576,
+		"Recall on Access": 4194304
+	};
 
-			if (Info["Link"]) { // Identify the link target
-				try {
-					Info["LinkTarget"]=Files.readSymbolicLink(path).toString();
-				} catch (any e) {
+
+	DirectoriesToList=ArrayNew(1);
+	DirectoriesToList[1]=Attributes.Directory;
+
+	while (ArrayLen(DirectoriesToList) GT 0) {
+
+		DirectoryData=createObject("java","java.io.File").init(DirectoriesToList[1]);
+		Entries=DirectoryData.listFiles();
+
+		
+		if (isNull(Entries)) {
+			ArrayDeleteAt(DirectoriesToList,1);
+			continue; // Can't access directory, move on to the next one if any
+		}
+
+		for (Entry in Entries) {
+
+			Info=StructNew("ordered");
+			Info["Name"]=Entry.getName(); // Name
+			Info["UName"]=UCase(Info["Name"]); // UName
+			Info["Size"]=Entry.length(); // Size
+			Info["Type"]=(Entry.isDirectory()) ? "Dir" : "File"; // Type
+
+			if (ListFindNoCase("Dir,File",Attributes.Type) AND Attributes.Type NEQ Info["Type"]) continue; // Skip this entry as it's not the correct type requested
+			//Info["DateLastModified"]=Entry.lastModified(); // DateLastModified
+			Info["DateLastModified"]=DateAdd("s",Int(Entry.lastModified() / 1000),CreateDate(1970,1,1)); // Convert Epoc to date
+			Info["Attributes"]=""; // Attributes
+			Info["Mode"]=""; // Mode
+			Info["Directory"]=Entry.getParent(); // Directory
+			path=Entry.toPath();
+			Info["Link"]=Files.isSymbolicLink(path); // Link
+
+			if (Attributes.FullDetails) {			
+				Info["Exists"]=Entry.exists();
+				Info["Hidden"]=Entry.isHidden();
+				Info["Read"]=Entry.canRead();
+				Info["Write"]=Entry.canWrite();
+				Info["Execute"]=Entry.canExecute();
+
+				if (Info["Link"]) { // Identify the link target
+					try {
+						Info["LinkTarget"]=Files.readSymbolicLink(path).toString();
+					} catch (any e) {
+						Info["LinkTarget"]="";
+					}
+				} else {
 					Info["LinkTarget"]="";
 				}
-			} else {
-				Info["LinkTarget"]="";
-			}
 
-			// Retrieve every available attribute from each supported view.
-			Info["DateLastModifiedZulu"]="";
-			Info["CreationTime"]="";
-			Info["CreationTimeZulu"]="";
-			Info["LastAccessTime"]="";
-			Info["LastAccessTimeZulu"]="";
-			Info["Owner"]="";
+				// Retrieve every available attribute from each supported view.
+				Info["DateLastModifiedZulu"]="";
+				Info["CreationTime"]="";
+				Info["CreationTimeZulu"]="";
+				Info["LastAccessTime"]="";
+				Info["LastAccessTimeZulu"]="";
+				Info["Owner"]="";
 
-			Attribs=StructNew();
+				Attribs=StructNew();
 
-			for (View in Views) {
+				for (View in Views) {
 
-				try {
-					javaAttributes=Files.readAttributes(
-						path,
-						View & ":*",
-						LinkOptions
-					);
+					try {
+						javaAttributes=Files.readAttributes(
+							path,
+							View & ":*",
+							LinkOptions
+						);
 
-					iterator=javaAttributes.entrySet().iterator();
+						iterator=javaAttributes.entrySet().iterator();
 
-					while (iterator.hasNext()) {
-						attribute=iterator.next();
-						Attribs[ListFirst(Attribute,"=")]=ListDeleteAt(Attribute,1,"=");
-					}
-				}
-				catch (any e) {
-					// Unsupported attribute views are expected.
-					// Skip them and continue with other views.
-				}
-				// Set create/last/modified dates
-				if (StructKeyExists(Attribs,"CreationTime")) {
-					Info["CreationTimeZulu"]=Attribs.CreationTime;
-					Info["CreationTime"]=DateConvert('Utc2local', Info["CreationTimeZulu"]); // Convert from zulu to local system time
-				}
-				if (StructKeyExists(Attribs,"LastAccessTime")) {
-					Info["LastAccessTimeZulu"]=Attribs.LastAccessTime;
-					Info["LastAccessTime"]=DateConvert('Utc2local', Info["LastAccessTimeZulu"]);
-				}
-				if (StructKeyExists(Attribs,"LastModifiedTime")) {
-					Info["DateLastModifiedZulu"]=Attribs.LastModifiedTime;
-					if (!IsDate(Info["DateLastModified"])) Info["DateLastModified"]=DateConvert('Utc2local', Info["DateLastModifiedZulu"]);
-				}
-				// Set Owner of item
-				if (StructKeyExists(Attribs,"owner")) Info["Owner"]=Attribs.owner;
-				// Set the windows attributes if any
-				if (StructKeyExists(Attribs,"attributes")) {
-
-					result = {
-						decimal = Attribs.attributes,
-						hexadecimal = "0x" & UCase(
-							createObject("java", "java.lang.Long")
-								.ToHexString(
-									javacast("long", Attribs.attributes)
-								)
-						),
-						flags = []
-					};
-
-					ReturnFlags="";
-
-					for (flag in flags) {
-						if (bitAnd(Attribs.attributes, flags[flag]) EQ flags[flag]) {
-							ArrayAppend(result.flags, flag);
-							ReturnFlags=ListAppend(ReturnFlags,flag);
+						while (iterator.hasNext()) {
+							attribute=iterator.next();
+							Attribs[ListFirst(Attribute,"=")]=ListDeleteAt(Attribute,1,"=");
 						}
 					}
-					Info["Attributes"]=ReturnFlags;
-				}
-			}
+					catch (any e) {
+						// Unsupported attribute views are expected.
+						// Skip them and continue with other views.
+					}
+					// Set create/last/modified dates
+					if (StructKeyExists(Attribs,"CreationTime")) {
+						Info["CreationTimeZulu"]=Attribs.CreationTime;
+						Info["CreationTime"]=DateConvert('Utc2local', Info["CreationTimeZulu"]); // Convert from zulu to local system time
+					}
+					if (StructKeyExists(Attribs,"LastAccessTime")) {
+						Info["LastAccessTimeZulu"]=Attribs.LastAccessTime;
+						Info["LastAccessTime"]=DateConvert('Utc2local', Info["LastAccessTimeZulu"]);
+					}
+					if (StructKeyExists(Attribs,"LastModifiedTime")) {
+						Info["DateLastModifiedZulu"]=Attribs.LastModifiedTime;
+						if (!IsDate(Info["DateLastModified"])) Info["DateLastModified"]=DateConvert('Utc2local', Info["DateLastModifiedZulu"]);
+					}
+					// Set Owner of item
+					if (StructKeyExists(Attribs,"owner")) Info["Owner"]=Attribs.owner;
+					// Set the windows attributes if any
+					if (StructKeyExists(Attribs,"attributes")) {
 
-			// Check for linked items
-			if (ListFind(Info["Attributes"],"Reparse Point")) Info["Link"]="YES";
-			if (Info["Type"] EQ "Dir" AND Attributes.Recurse) {
-				if (Info["Link"] EQ "YES" AND Attributes.FollowLinkedFolders) {
-					DirectoriesToList[ArrayLen(DirectoriesToList)+1]=Entry.getAbsolutePath();
-				} else if (Info["Link"] EQ "NO") {
-					DirectoriesToList[ArrayLen(DirectoriesToList)+1]=Entry.getAbsolutePath();
+						result = {
+							decimal = Attribs.attributes,
+							hexadecimal = "0x" & UCase(
+								createObject("java", "java.lang.Long")
+									.ToHexString(
+										javacast("long", Attribs.attributes)
+									)
+							),
+							flags = []
+						};
+
+						ReturnFlags="";
+
+						for (flag in flags) {
+							if (bitAnd(Attribs.attributes, flags[flag]) EQ flags[flag]) {
+								ArrayAppend(result.flags, flag);
+								ReturnFlags=ListAppend(ReturnFlags,flag);
+							}
+						}
+						Info["Attributes"]=ReturnFlags;
+					}
 				}
+
+				// Check for linked items
+				if (ListFind(Info["Attributes"],"Reparse Point")) Info["Link"]="YES";
+				if (Info["Type"] EQ "Dir" AND Attributes.Recurse) {
+					if (Info["Link"] EQ "YES" AND Attributes.FollowLinkedFolders) {
+						DirectoriesToList[ArrayLen(DirectoriesToList)+1]=Entry.getAbsolutePath();
+					} else if (Info["Link"] EQ "NO") {
+						DirectoriesToList[ArrayLen(DirectoriesToList)+1]=Entry.getAbsolutePath();
+					}
+				}
+			} else {
+				if (Info["Type"] EQ "Dir" AND Attributes.Recurse) DirectoriesToList[ArrayLen(DirectoriesToList)+1]=Entry.getAbsolutePath();
 			}
-		} else {
-			if (Info["Type"] EQ "Dir" AND Attributes.Recurse) DirectoriesToList[ArrayLen(DirectoriesToList)+1]=Entry.getAbsolutePath();
+			QueryAddRow(DirInfo,Info);
 		}
-		QueryAddRow(DirInfo,Info);
-	}
 
-	ArrayDeleteAt(DirectoriesToList,1); // Remove the directory we just parsed
+		ArrayDeleteAt(DirectoriesToList,1); // Remove the directory we just parsed
+	}
 }
 
 // Apply filtering
