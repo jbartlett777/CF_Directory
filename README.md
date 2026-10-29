@@ -7,18 +7,14 @@ During benchmark tests, this Custom Tag returned the directory listing in 40-50%
 causes parent directories to still reside in memory while diving into sub-directories (but I haven't tested that theory yet). This version does not recurse into itself, instead looping
 over a array of directories to fetch, appending to that array in the event the recurse flag is passed.
 
-> [!CAUTION]
-> This tag is still under development
-
-Directory: Required. Directory to return<br>
-Name: Required. Name of variable to hold the results<br>
-Sort: Column names of the return with "ASC" or "DESC" after, comma delimited. Default=Name ASC<br>
-CaseSenstiveSort: true/false. Default=false<br>
-Filter: Pipe delimited string. Default="". Ex: *.cfm|*.cfc<br>
-Type: [all|dir|file]. Default=all<br>
-Recurse: true|false. Default=false<br>
-FullDetails: Returns extra details on the files such as create/access dates, dates in Zulu, access rights, owner<br>
-FollowLinkedFolders: true|false. Default=false. If recursing into directories, follow or not follow symlinks or junctions. Only available if FullDetails=true<br>
+## Syntax
+The CF_Directory tag uses the same options as ```<CFDirectory>``` with the following new options
+| Command | Options | Description |
+| :--- | :----: | :--- |
+| **CaseSenstiveSort** | true false | Default=false. Considers letter case for sorting or not |
+| **FullDetails** | true false| Default=false. Returns extra details on the files such as create/access dates, dates in Zulu, access rights, owner |
+| **FollowLinkedFolders** | true false | Default=false. If recursing into directories, follow or not follow symlinks or junctions. Only available if FullDetails=true |
+| **Alt** | true false | Default=false. Use DOS commands to fetch the directories under Windows if SMB listings return very slow |
 
 # Examples
 All dump displays are using my <a href="https://github.com/jbartlett777/CF_DumpVar">cf_dumpvar Custom Tag</a><br>
