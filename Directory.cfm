@@ -1,4 +1,7 @@
 <cfscript>
+// GNU General Public License v3.0
+// https://github.com/jbartlett777/CF_Directory
+
 // Only process at the start of a tag calling
 if (StructKeyExists(variables,"ThisTag")) {
 	if (ThisTag.ExecutionMode EQ "end") exit "exittag";
@@ -109,8 +112,6 @@ if (Attributes.Alt) {
 				}
 
 			}
-		} {
-			// Unix
 		}
 	}
 } else {
@@ -316,7 +317,7 @@ if (Attributes.Filter NEQ "") {
 			WHEREArray,
 			{dbtype="Query"}
 		);
-	} catch (any2 e) {
+	} catch (any e) {
 		throw (type="Custom", Message="Invalid filter");
 	}
 }
@@ -343,7 +344,7 @@ try {
 			{dbtype="Query"}
 		);
 	}
-} catch (any2 e) {
+} catch (any e) {
 	throw (type="Custom", Message="Invalid sort reference");
 }
 
